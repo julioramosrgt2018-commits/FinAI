@@ -1,61 +1,44 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { supabase, formatCurrency, type Transaction, type Category, type Account, type CreditCard } from '@/lib/supabase';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend, LineChart, Line, CartesianGrid } from 'recharts';
-import { Calendar, Download, TrendingUp, TrendingDown, BarChart3, PieChart as PieIcon, LineChart as LineIcon } from 'lucide-react';
+import { Download, TrendingUp, TrendingDown, BarChart3, PieChart as PieIcon, LineChart as LineIcon } from 'lucide-react';
+import { DateFilterBar } from '@/components/DateFilterBar';
+import { useDateFilter } from '@/lib/dateFilter';
+import { useProfile } from '@/lib/profile';
 
-type PeriodType = 'day' | 'week' | 'month' | 'year';
 
 export function Reports() {
+  const { profile } = useProfile();
+  const { startDate, endDate } = useDateFilter();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [cards, setCards] = useState<CreditCard[]>([]);
   const [loading, setLoading] = useState(true);
-  const [period, setPeriod] = useState<PeriodType>('month');
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
 
   const loadData = useCallback(async () => {
     const [txns, cats, accs, cds] = await Promise.all([
-      supabase.from('transactions').select('*').order('date'),
-      supabase.from('categories').select('*').order('name'),
-      supabase.from('accounts').select('*').order('name'),
-      supabase.from('credit_cards').select('*').order('name'),
+      supabase.from('transactions').select('*').eq('profile', profile).gte('date', startDate).lte('date', endDate).order('date'),
+      supabase.from('categories').select('*').eq('profile', profile).order('name'),
+      supabase.from('accounts').select('*').eq('profile', profile).order('name'),
+      supabase.from('credit_cards').select('*').eq('profile', profile).order('name'),
     ]);
     setTransactions(txns.data || []);
     setCategories(cats.data || []);
     setAccounts(accs.data || []);
     setCards(cds.data || []);
     setLoading(false);
-  }, []);
+  }, [profile, startDate, endDate]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  const { startDate, endDate } = useMemo(() => {
-    const now = new Date();
-    if (customStart && customEnd) {
-      return { startDate: new Date(customStart), endDate: new Date(customEnd) };
-    }
-    if (period === 'day') {
-      return { startDate: now, endDate: now };
-    }
-    if (period === 'week') {
-      const start = new Date(now);
-      start.setDate(start.getDate() - 7);
-      return { startDate: start, endDate: now };
-    }
-    if (period === 'month') {
-      return { startDate: new Date(now.getFullYear(), now.getMonth(), 1), endDate: new Date(now.getFullYear(), now.getMonth() + 1, 0) };
-    }
-    return { startDate: new Date(now.getFullYear(), 0, 1), endDate: new Date(now.getFullYear(), 11, 31) };
-  }, [period, customStart, customEnd]);
-
+  const { startDate: sd, endDate: ed } = { startDate, endDate };
   const filteredTxns = useMemo(() => {
     return transactions.filter(t => {
       const d = new Date(t.date);
-      return d >= startDate && d <= endDate;
+      return d >= new Date(sd) && d <= new Date(ed);
     });
-  }, [transactions, startDate, endDate]);
+  }, [transactions, sd, ed]);
 
   // Expenses by category
   const expensesByCategory = useMemo(() => {
@@ -164,31 +147,7 @@ export function Reports() {
         </button>
       </div>
 
-      {/* Period filter */}
-      <div className="card p-4">
-        <div className="flex items-center gap-2 mb-3">
-          <Calendar size={16} className="text-[#a1a1aa]" />
-          <span className="label">Período</span>
-        </div>
-        <div className="flex gap-2 mb-3">
-          {(['day', 'week', 'month', 'year'] as PeriodType[]).map(p => (
-            <button key={p} onClick={() => { setPeriod(p); setCustomStart(''); setCustomEnd(''); }}
-              className={`chip ${period === p && !customStart ? 'bg-[#10b981]/20 text-[#10b981] border border-[#10b981]/30' : 'bg-[#27272a] text-[#a1a1aa]'}`}>
-              {p === 'day' ? 'Dia' : p === 'week' ? 'Semana' : p === 'month' ? 'Mês' : 'Ano'}
-            </button>
-          ))}
-        </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="label">De</label>
-            <input type="date" className="input mt-1" value={customStart} onChange={e => { setCustomStart(e.target.value); setPeriod('month'); }} />
-          </div>
-          <div>
-            <label className="label">Até</label>
-            <input type="date" className="input mt-1" value={customEnd} onChange={e => { setCustomEnd(e.target.value); setPeriod('month'); }} />
-          </div>
-        </div>
-      </div>
+      <DateFilterBar />
 
       {/* Summary */}
       <div className="grid grid-cols-3 gap-2">

@@ -5,6 +5,8 @@ const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
+export type Profile = 'pf' | 'pj';
+
 export type Category = {
   id: string;
   name: string;
@@ -13,6 +15,8 @@ export type Category = {
   color: string;
   icon: string;
   parent_id: string | null;
+  group_name: string | null;
+  profile: Profile;
   created_at: string;
 };
 
@@ -27,6 +31,7 @@ export type Account = {
   sync_enabled: boolean;
   last_sync: string | null;
   color: string;
+  profile: Profile;
   created_at: string;
 };
 
@@ -38,6 +43,7 @@ export type CreditCard = {
   closing_day: number;
   due_day: number;
   color: string;
+  profile: Profile;
   created_at: string;
 };
 
@@ -50,6 +56,7 @@ export type CardInvoice = {
   amount: number;
   status: 'open' | 'future' | 'closed' | 'paid';
   paid_at: string | null;
+  profile: Profile;
   created_at: string;
 };
 
@@ -64,12 +71,36 @@ export type Transaction = {
   invoice_id: string | null;
   date: string;
   confirmed: boolean;
-  source: 'manual' | 'open_finance' | 'ai';
+  source: 'manual' | 'ai';
   notes: string | null;
+  installments_total: number;
+  installment_number: number;
+  recurring_series_id: string | null;
+  occurrence_number: number;
+  profile: Profile;
   created_at: string;
   category?: Category | null;
   account?: Account | null;
   card?: CreditCard | null;
+};
+
+export type RecurringSeries = {
+  id: string;
+  description: string;
+  amount: number;
+  type: 'income' | 'expense' | 'transfer';
+  category_id: string | null;
+  account_id: string | null;
+  card_id: string | null;
+  periodicity: 'weekly' | 'monthly' | 'yearly';
+  end_type: 'never' | 'date' | 'count';
+  end_date: string | null;
+  max_occurrences: number | null;
+  generated_count: number;
+  next_date: string;
+  active: boolean;
+  profile: Profile;
+  created_at: string;
 };
 
 export type Benefit = {
@@ -80,6 +111,9 @@ export type Benefit = {
   balance: number;
   card_number: string | null;
   color: string;
+  sync_enabled: boolean;
+  last_sync: string | null;
+  profile: Profile;
   created_at: string;
 };
 
@@ -90,6 +124,7 @@ export type BenefitTransaction = {
   amount: number;
   type: 'credit' | 'debit';
   date: string;
+  profile: Profile;
   created_at: string;
 };
 
@@ -107,6 +142,7 @@ export type Loan = {
   remaining_balance: number;
   installments_paid: number;
   color: string;
+  profile: Profile;
   created_at: string;
 };
 
@@ -118,6 +154,7 @@ export type LoanInstallment = {
   due_date: string;
   paid: boolean;
   paid_at: string | null;
+  profile: Profile;
   created_at: string;
 };
 
@@ -132,6 +169,7 @@ export type Investment = {
   invested_amount: number;
   current_value: number;
   color: string;
+  profile: Profile;
   created_at: string;
 };
 
@@ -139,6 +177,7 @@ export type AIConversation = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  profile: Profile;
   created_at: string;
 };
 
@@ -151,6 +190,38 @@ export type Alert = {
   read: boolean;
   related_id: string | null;
   due_date: string | null;
+  profile: Profile;
+  created_at: string;
+};
+
+export type CardTerminal = {
+  id: string;
+  name: string;
+  acquirer: string;
+  terminal_id: string | null;
+  sync_enabled: boolean;
+  last_sync: string | null;
+  color: string;
+  profile: Profile;
+  created_at: string;
+};
+
+export type CardSale = {
+  id: string;
+  terminal_id: string;
+  sale_date: string;
+  gross_amount: number;
+  net_amount: number;
+  fee_amount: number;
+  fee_rate: number;
+  payment_type: 'debit' | 'credit';
+  installments: number;
+  settlement_date: string;
+  settlement_type: 'standard' | 'anticipated';
+  status: 'pending' | 'settled' | 'cancelled';
+  description: string | null;
+  source: 'manual' | 'api';
+  profile: Profile;
   created_at: string;
 };
 

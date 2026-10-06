@@ -1,40 +1,45 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase, formatCurrency, type Account, type CreditCard as CreditCardType } from '@/lib/supabase';
-import { Building2, Plus, Pencil, Trash2, RefreshCw, Link2, CreditCard, Shield, Zap, Fingerprint, Lock, Eye, EyeOff, Clock } from 'lucide-react';
+import { supabase, formatCurrency, type Account, type CreditCard as CreditCardType, type CardInvoice } from '@/lib/supabase';
+import { Building2, Plus, Pencil, Trash2, CreditCard, Shield, Fingerprint, Lock, Eye, EyeOff, Clock, SlidersHorizontal, ScanFace, Loader2, CheckCircle2, AlertCircle } from 'lucide-react';
 import { Modal } from '@/components/Modal';
 import { ConfirmDialog, EmptyState } from '@/components/Shared';
-import { OpenFinanceModal, type OpenFinanceInstitution } from '@/components/OpenFinanceModal';
 import { useSecurity } from '@/lib/security';
+import { useProfile } from '@/lib/profile';
 
 export function Settings() {
+  const { profile } = useProfile();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [cards, setCards] = useState<CreditCardType[]>([]);
+  const [invoices, setInvoices] = useState<CardInvoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [showOpenFinance, setShowOpenFinance] = useState(false);
-  const [connectedBanks, setConnectedBanks] = useState<OpenFinanceInstitution[]>([]);
   const [editing, setEditing] = useState<Account | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
-  const [syncing, setSyncing] = useState<string | null>(null);
+  const [showAdjustModal, setShowAdjustModal] = useState(false);
+  const [adjustForm, setAdjustForm] = useState({ invoiceId: '', amount: '' });
   const [accForm, setAccForm] = useState({
     name: '', institution: '', type: 'checking', balance: '', agency: '', account_number: '', color: '#3b82f6',
   });
 
-  const { pin, setPin, lock, biometricAvailable, biometricEnabled, setBiometricEnabled, lockTimeout, setLockTimeout, maskValues, setMaskValues } = useSecurity();
+  const { pin, setPin, lock, biometricAvailable, biometricEnabled, enrollBiometric, disableBiometric, lockTimeout, setLockTimeout, maskValues, setMaskValues } = useSecurity();
+  const [bioLoading, setBioLoading] = useState(false);
+  const [bioStatus, setBioStatus] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
   const [showPinSetup, setShowPinSetup] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [pinConfirm, setPinConfirm] = useState('');
   const [pinError, setPinError] = useState('');
 
   const loadData = useCallback(async () => {
-    const [accs, cds] = await Promise.all([
-      supabase.from('accounts').select('*').order('name'),
-      supabase.from('credit_cards').select('*').order('name'),
+    const [accs, cds, invs] = await Promise.all([
+      supabase.from('accounts').select('*').eq('profile', profile).order('name'),
+      supabase.from('credit_cards').select('*').eq('profile', profile).order('name'),
+      supabase.from('card_invoices').select('*').eq('profile', profile).order('due_date'),
     ]);
     setAccounts(accs.data || []);
     setCards(cds.data || []);
+    setInvoices(invs.data || []);
     setLoading(false);
-  }, []);
+  }, [profile]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -55,7 +60,7 @@ export function Settings() {
     const data = {
       name: accForm.name, institution: accForm.institution, type: accForm.type as Account['type'],
       balance: parseFloat(accForm.balance) || 0, agency: accForm.agency || null,
-      account_number: accForm.account_number || null, color: accForm.color,
+      account_number: accForm.account_number || null, color: accForm.color, profile,
     };
     if (editing) {
       await supabase.from('accounts').update(data).eq('id', editing.id);
@@ -75,21 +80,6 @@ export function Settings() {
     loadData();
   }
 
-  async function toggleSync(acc: Account) {
-    setSyncing(acc.id);
-    await new Promise(r => setTimeout(r, 1500));
-    await supabase.from('accounts').update({
-      sync_enabled: !acc.sync_enabled,
-      last_sync: new Date().toISOString(),
-    }).eq('id', acc.id);
-    setSyncing(null);
-    loadData();
-  }
-
-  function handleOpenFinanceConnected(inst: OpenFinanceInstitution) {
-    setConnectedBanks(prev => [...prev, inst]);
-  }
-
   function handleSetPin() {
     if (pinInput.length !== 6) { setPinError('PIN deve ter 6 dígitos.'); return; }
     if (pinInput !== pinConfirm) { setPinError('PINs não coincidem.'); return; }
@@ -100,6 +90,16 @@ export function Settings() {
     setPinError('');
   }
 
+  async function adjustInvoice(e: React.FormEvent) {
+    e.preventDefault();
+    const amount = parseFloat(adjustForm.amount);
+    if (isNaN(amount) || !adjustForm.invoiceId) return;
+    await supabase.from('card_invoices').update({ amount }).eq('id', adjustForm.invoiceId);
+    setShowAdjustModal(false);
+    setAdjustForm({ invoiceId: '', amount: '' });
+    loadData();
+  }
+
   const colors = ['#3b82f6', '#10b981', '#ef4444', '#f59e0b', '#8b5cf6', '#06b6d4', '#ec4899', '#f97316'];
   const institutions = ['Itaú', 'Bradesco', 'Santander', 'Banco do Brasil', 'Nubank', 'Inter', 'C6 Bank', 'XP', 'BTG Pactual', 'Caixa', 'PicPay', 'Mercado Pago', 'Outro'];
 
@@ -108,44 +108,6 @@ export function Settings() {
   return (
     <div className="space-y-4 pb-24">
       <h1 className="text-2xl font-bold text-white">Configurações</h1>
-
-      {/* Open Finance Section */}
-      <div className="card p-5">
-        <div className="flex items-center gap-2 mb-3">
-          <div className="w-10 h-10 rounded-xl bg-[#10b981]/15 flex items-center justify-center">
-            <Link2 size={20} className="text-[#10b981]" />
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold text-white">Open Finance Brasil</h2>
-            <p className="text-xs text-[#71717a]">Sincronização automática com bancos</p>
-          </div>
-        </div>
-        <p className="text-xs text-[#a1a1aa] mb-3">
-          Conecte suas contas bancárias via Open Finance para sincronização automática de saldos e extratos em tempo real.
-          Suportamos Itaú, Bradesco, Santander, Banco do Brasil, Nubank, Inter e mais.
-        </p>
-        <div className="flex items-center gap-2 text-xs text-[#10b981] mb-3">
-          <Shield size={14} />
-          <span>Criptografia AES-256 para credenciais</span>
-        </div>
-        <button onClick={() => setShowOpenFinance(true)} className="w-full btn-primary flex items-center justify-center gap-2">
-          <Link2 size={16} /> Conectar Banco / Open Finance
-        </button>
-        {connectedBanks.length > 0 && (
-          <div className="mt-3 space-y-1.5">
-            <p className="text-xs text-[#71717a] font-medium">Instituições conectadas:</p>
-            {connectedBanks.map(b => (
-              <div key={b.id} className="flex items-center gap-2 p-2 rounded-lg bg-[#0a0a0b] border border-[#27272a]">
-                <div className="w-7 h-7 rounded-md flex items-center justify-center text-[10px] font-bold text-white" style={{ background: b.color }}>
-                  {b.logo}
-                </div>
-                <span className="text-xs text-white flex-1">{b.name}</span>
-                <span className="text-xs text-[#10b981] flex items-center gap-1"><Zap size={10} /> Ativo</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
 
       {/* Security & Privacy Section */}
       <div className="card p-5">
@@ -175,21 +137,56 @@ export function Settings() {
           </div>
 
           {/* Biometric */}
-          <div className="flex items-center justify-between p-3 rounded-lg bg-[#0a0a0b] border border-[#27272a]">
-            <div className="flex items-center gap-2">
-              <Fingerprint size={16} className={biometricAvailable ? 'text-[#10b981]' : 'text-[#71717a]'} />
-              <div>
-                <p className="text-sm text-white">Biometria (Face ID / Digital)</p>
-                <p className="text-xs text-[#71717a]">{biometricAvailable ? 'Disponível neste dispositivo' : 'Não disponível'}</p>
+          <div className="p-3 rounded-lg bg-[#0a0a0b] border border-[#27272a]">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                {biometricAvailable ? <ScanFace size={16} className="text-[#10b981]" /> : <Fingerprint size={16} className="text-[#71717a]" />}
+                <div>
+                  <p className="text-sm text-white">Biometria (Face ID / Digital)</p>
+                  <p className="text-xs text-[#71717a]">
+                    {biometricAvailable
+                      ? biometricEnabled ? 'Ativada — toque para desativar' : 'Toque para ativar e registrar'
+                      : 'Nao disponível neste dispositivo'}
+                  </p>
+                </div>
               </div>
+              <button
+                onClick={async () => {
+                  if (!biometricAvailable) return;
+                  if (biometricEnabled) {
+                    disableBiometric();
+                    setBioStatus({ type: 'success', msg: 'Biometria desativada.' });
+                  } else {
+                    setBioLoading(true);
+                    setBioStatus(null);
+                    const success = await enrollBiometric();
+                    setBioLoading(false);
+                    if (success) {
+                      setBioStatus({ type: 'success', msg: 'Biometria ativada com sucesso! Você já pode usá-la para desbloquear.' });
+                    } else {
+                      setBioStatus({ type: 'error', msg: 'Nao foi possível registrar a biometria. Verifique se seu dispositivo suporta e tente novamente.' });
+                    }
+                  }
+                  setTimeout(() => setBioStatus(null), 5000);
+                }}
+                disabled={!biometricAvailable || bioLoading}
+                className={`w-11 h-6 rounded-full transition-colors ${biometricEnabled ? 'bg-[#10b981]' : 'bg-[#27272a]'} disabled:opacity-40 relative flex-shrink-0`}
+              >
+                <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${biometricEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+              </button>
             </div>
-            <button
-              onClick={() => biometricAvailable && setBiometricEnabled(!biometricEnabled)}
-              disabled={!biometricAvailable}
-              className={`w-11 h-6 rounded-full transition-colors ${biometricEnabled ? 'bg-[#10b981]' : 'bg-[#27272a]'} disabled:opacity-40 relative`}
-            >
-              <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white transition-transform ${biometricEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
-            </button>
+            {bioLoading && (
+              <div className="flex items-center gap-2 mt-2 text-xs text-[#10b981]">
+                <Loader2 size={12} className="animate-spin" />
+                <span>Aguardando leitura biométrica do dispositivo...</span>
+              </div>
+            )}
+            {bioStatus && (
+              <div className={`flex items-center gap-1.5 mt-2 text-xs rounded-lg px-2.5 py-2 ${bioStatus.type === 'success' ? 'text-[#10b981] bg-[#10b981]/10' : 'text-[#f59e0b] bg-[#f59e0b]/10'}`}>
+                {bioStatus.type === 'success' ? <CheckCircle2 size={12} /> : <AlertCircle size={12} />}
+                <span>{bioStatus.msg}</span>
+              </div>
+            )}
           </div>
 
           {/* Auto-lock timeout */}
@@ -273,14 +270,10 @@ export function Settings() {
                   </div>
                   <div className="text-right">
                     <p className="text-sm font-bold text-white">{formatCurrency(Number(acc.balance))}</p>
-                    {acc.sync_enabled && <span className="text-xs text-[#10b981] flex items-center gap-1 justify-end"><Zap size={10} /> Sincronizado</span>}
                   </div>
                 </div>
                 <div className="flex gap-1 mt-2 pt-2 border-t border-[#27272a]">
-                  <button onClick={() => toggleSync(acc)} disabled={syncing === acc.id} className="btn-ghost text-xs flex items-center gap-1 disabled:opacity-50">
-                    <RefreshCw size={12} className={syncing === acc.id ? 'animate-spin' : ''} />
-                    {acc.sync_enabled ? 'Desativar Sync' : 'Ativar Sync'}
-                  </button>
+                  <div className="flex-1" />
                   <button onClick={() => { setEditing(acc); setShowForm(true); }} className="btn-ghost text-xs flex items-center gap-1">
                     <Pencil size={12} /> Editar
                   </button>
@@ -320,6 +313,41 @@ export function Settings() {
           </div>
         )}
       </div>
+
+      {/* Invoice Balance Adjustment */}
+      {invoices.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-base font-semibold text-white flex items-center gap-2">
+              <SlidersHorizontal size={16} className="text-[#f59e0b]" />
+              Ajuste de Faturas
+            </h2>
+            <button onClick={() => { setAdjustForm({ invoiceId: '', amount: '' }); setShowAdjustModal(true); }} className="btn-ghost text-xs flex items-center gap-1 border border-[#27272a]">
+              <Pencil size={12} /> Ajustar
+            </button>
+          </div>
+          <div className="space-y-2">
+            {invoices.filter(i => i.status === 'open' || i.status === 'future').map(inv => {
+              const card = cards.find(c => c.id === inv.card_id);
+              return (
+                <div key={inv.id} className="card p-3 flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `${card?.color || '#71717a'}20` }}>
+                    <CreditCard size={14} style={{ color: card?.color || '#71717a' }} />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-white truncate">{card?.name || 'Cartão'} — {inv.reference_month}</p>
+                    <p className="text-xs text-[#71717a]">{inv.status === 'open' ? 'Aberta' : 'Futura'} • Venc: {inv.due_date}</p>
+                  </div>
+                  <p className="text-sm font-bold text-white">{formatCurrency(Number(inv.amount))}</p>
+                  <button onClick={() => { setAdjustForm({ invoiceId: inv.id, amount: String(inv.amount) }); setShowAdjustModal(true); }} className="p-1.5 hover:bg-[#27272a] rounded-lg">
+                    <Pencil size={12} className="text-[#a1a1aa]" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Account Form */}
       <Modal open={showForm} onClose={() => { setShowForm(false); setEditing(null); }} title={editing ? 'Editar Conta' : 'Nova Conta Bancária'}>
@@ -382,13 +410,6 @@ export function Settings() {
         onCancel={() => setDeleteId(null)}
       />
 
-      {/* Open Finance Modal */}
-      <OpenFinanceModal
-        open={showOpenFinance}
-        onClose={() => setShowOpenFinance(false)}
-        onConnected={handleOpenFinanceConnected}
-      />
-
       {/* PIN Setup Modal */}
       <Modal open={showPinSetup} onClose={() => { setShowPinSetup(false); setPinInput(''); setPinConfirm(''); setPinError(''); }} title={pin ? 'Alterar PIN' : 'Configurar PIN'} size="sm">
         <div className="space-y-4">
@@ -424,6 +445,44 @@ export function Settings() {
           {pinError && <p className="text-xs text-[#ef4444]">{pinError}</p>}
           <button onClick={handleSetPin} className="w-full btn-primary">Salvar PIN</button>
         </div>
+      </Modal>
+      {/* Invoice Adjustment Modal */}
+      <Modal open={showAdjustModal} onClose={() => setShowAdjustModal(false)} title="Ajustar Saldo da Fatura" size="sm">
+        <form onSubmit={adjustInvoice} className="space-y-4">
+          <div>
+            <label className="label">Fatura</label>
+            <select
+              className="input mt-1"
+              value={adjustForm.invoiceId}
+              onChange={e => setAdjustForm(f => ({ ...f, invoiceId: e.target.value }))}
+              required
+            >
+              <option value="">Selecione...</option>
+              {invoices.map(inv => {
+                const card = cards.find(c => c.id === inv.card_id);
+                return (
+                  <option key={inv.id} value={inv.id}>
+                    {card?.name || 'Cartão'} — {inv.reference_month} ({inv.status})
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+          <div>
+            <label className="label">Valor Correto (R$)</label>
+            <input
+              type="number"
+              step="0.01"
+              className="input mt-1"
+              value={adjustForm.amount}
+              onChange={e => setAdjustForm(f => ({ ...f, amount: e.target.value }))}
+              placeholder="0,00"
+              required
+            />
+            <p className="text-xs text-[#71717a] mt-1">Digite o valor correto da fatura para corrigir distorções.</p>
+          </div>
+          <button type="submit" className="w-full btn-primary">Aplicar Ajuste</button>
+        </form>
       </Modal>
     </div>
   );

@@ -1,43 +1,46 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase, formatCurrency, formatDate, type Account, type CreditCard as CreditCardType, type CardInvoice, type Transaction, type Alert, type Category, type Benefit, type Loan } from '@/lib/supabase';
-import { TrendingUp, TrendingDown, Wallet, CreditCard, Bell, ArrowUpRight, ArrowDownRight, Plus, Building2, AlertTriangle, Clock, Eye, EyeOff } from 'lucide-react';
+import { supabase, formatCurrency, formatDate, type Account, type CreditCard as CreditCardType, type CardInvoice, type Transaction, type Category, type Benefit, type Loan } from '@/lib/supabase';
+import { TrendingUp, TrendingDown, Wallet, CreditCard, ArrowUpRight, ArrowDownRight, Plus, Building2, AlertTriangle, Clock, Eye, EyeOff, Landmark, Zap, CalendarClock } from 'lucide-react';
 import { TransactionForm } from '@/components/TransactionForm';
 import { EmptyState } from '@/components/Shared';
+import { DateFilterBar } from '@/components/DateFilterBar';
+import { useDateFilter } from '@/lib/dateFilter';
 import { useSecurity } from '@/lib/security';
+import { useProfile } from '@/lib/profile';
+import { computeDueAlerts, payDueAlertItem, type DueAlertSummary, type DueAlertItem } from '@/lib/dueAlerts';
+import { CheckCircle2, ChevronDown } from 'lucide-react';
 
 type DashboardProps = {
   onNavigate: (page: string) => void;
 };
 
 export function Dashboard({ onNavigate }: DashboardProps) {
+  const { profile, isPJ } = useProfile();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [cards, setCards] = useState<CreditCardType[]>([]);
   const [invoices, setInvoices] = useState<CardInvoice[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [alerts, setAlerts] = useState<Alert[]>([]);
   const [benefits, setBenefits] = useState<Benefit[]>([]);
   const [loans, setLoans] = useState<Loan[]>([]);
+  const [dueAlerts, setDueAlerts] = useState<DueAlertSummary | null>(null);
+  const [futureTxns, setFutureTxns] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [showTransactionForm, setShowTransactionForm] = useState(false);
+  const { startDate, endDate } = useDateFilter();
   const { maskValues, toggleMask } = useSecurity();
 
   const fmt = (v: number) => maskValues ? 'R$ ••••••' : formatCurrency(v);
 
   const loadData = useCallback(async () => {
-    const now = new Date();
-    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10);
-    const lastDay = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10);
-
-    const [accs, cds, invs, txns, cats, alts, bens, lns] = await Promise.all([
-      supabase.from('accounts').select('*').order('name'),
-      supabase.from('credit_cards').select('*').order('name'),
-      supabase.from('card_invoices').select('*').order('due_date'),
-      supabase.from('transactions').select('*, category:categories(*), account:accounts(*), card:credit_cards(*)').gte('date', firstDay).lte('date', lastDay).order('date', { ascending: false }),
-      supabase.from('categories').select('*').order('name'),
-      supabase.from('alerts').select('*').order('created_at', { ascending: false }).limit(10),
-      supabase.from('benefits').select('*').order('name'),
-      supabase.from('loans').select('*').order('name'),
+    const [accs, cds, invs, txns, cats, bens, lns] = await Promise.all([
+      supabase.from('accounts').select('*').eq('profile', profile).order('name'),
+      supabase.from('credit_cards').select('*').eq('profile', profile).order('name'),
+      supabase.from('card_invoices').select('*').eq('profile', profile).order('due_date'),
+      supabase.from('transactions').select('*, category:categories(*), account:accounts(*), card:credit_cards(*)').eq('profile', profile).gte('date', startDate).lte('date', endDate).order('date', { ascending: false }),
+      supabase.from('categories').select('*').eq('profile', profile).order('name'),
+      supabase.from('benefits').select('*').eq('profile', profile).order('name'),
+      supabase.from('loans').select('*').eq('profile', profile).order('name'),
     ]);
 
     setAccounts(accs.data || []);
@@ -45,27 +48,62 @@ export function Dashboard({ onNavigate }: DashboardProps) {
     setInvoices(invs.data || []);
     setTransactions(txns.data || []);
     setCategories(cats.data || []);
-    setAlerts(alts.data || []);
     setBenefits(bens.data || []);
     setLoans(lns.data || []);
     setLoading(false);
-  }, []);
+
+    // Load future-dated account transactions for projected balance
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const { data: futureData } = await supabase
+      .from('transactions')
+      .select('*, category:categories(*), account:accounts(*), card:credit_cards(*)')
+      .eq('profile', profile)
+      .gt('date', todayStr)
+      .order('date', { ascending: true });
+    setFutureTxns(futureData || []);
+
+    // Compute due alerts for the alerts banner
+    const alertsSummary = await computeDueAlerts(profile);
+    setDueAlerts(alertsSummary);
+  }, [profile, startDate, endDate]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
   const totalBalance = accounts.reduce((sum, a) => sum + Number(a.balance), 0);
-  const totalIncome = transactions.filter(t => t.type === 'income').reduce((s, t) => s + Math.abs(Number(t.amount)), 0);
-  const totalExpense = transactions.filter(t => t.type === 'expense').reduce((s, t) => s + Math.abs(Number(t.amount)), 0);
+
+  // Projected balance: current balance minus all future confirmed expenses plus future incomes
+  // Only account-linked transactions affect the projection
+  const futureAccountEffect = futureTxns
+    .filter(t => t.account_id)
+    .reduce((sum, t) => sum + Number(t.amount), 0);
+  const projectedBalance = totalBalance + futureAccountEffect;
+  const upcomingScheduled = futureTxns
+    .filter(t => t.account_id && t.type === 'expense')
+    .slice(0, 5);
+
+  // Competency-based income/expense: for installment card transactions,
+  // use the invoice's due_date as the competency month instead of the purchase date.
+  // This ensures each installment is counted only in its own month.
+  const txnWithCompetency = transactions.map(t => {
+    if (t.invoice_id) {
+      const inv = invoices.find(i => i.id === t.invoice_id);
+      if (inv) {
+        return { ...t, competencyDate: inv.due_date };
+      }
+    }
+    return { ...t, competencyDate: t.date };
+  });
+
+  const totalIncome = txnWithCompetency.filter(t => t.type === 'income' && t.competencyDate >= startDate && t.competencyDate <= endDate).reduce((s, t) => s + Math.abs(Number(t.amount)), 0);
+  const totalExpense = txnWithCompetency.filter(t => t.type === 'expense' && t.competencyDate >= startDate && t.competencyDate <= endDate).reduce((s, t) => s + Math.abs(Number(t.amount)), 0);
   const totalBenefits = benefits.reduce((s, b) => s + Number(b.balance), 0);
   const totalLoanDebt = loans.reduce((s, l) => s + Number(l.remaining_balance), 0);
 
-  const openInvoices = invoices.filter(i => i.status === 'open');
-  const upcomingInvoices = invoices.filter(i => i.status === 'future');
-  const paidInvoices = invoices.filter(i => i.status === 'paid' || i.status === 'closed');
 
-  const recentTransactions = transactions.slice(0, 8);
-
-  const monthName = new Date().toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  const recentTransactions = txnWithCompetency
+    .filter(t => t.competencyDate >= startDate && t.competencyDate <= endDate)
+    .sort((a, b) => b.competencyDate.localeCompare(a.competencyDate))
+    .slice(0, 8);
 
   if (loading) {
     return (
@@ -81,10 +119,7 @@ export function Dashboard({ onNavigate }: DashboardProps) {
     <div className="space-y-5 pb-24">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm text-[#71717a] capitalize">{monthName}</p>
-          <h1 className="text-2xl font-bold text-white">Dashboard</h1>
-        </div>
+        <h1 className="text-2xl font-bold text-white">Dashboard</h1>
         <div className="flex items-center gap-2">
           <button onClick={toggleMask} className="p-2 rounded-lg text-[#a1a1aa] hover:text-white hover:bg-[#27272a] transition-colors">
             {maskValues ? <EyeOff size={18} /> : <Eye size={18} />}
@@ -96,13 +131,41 @@ export function Dashboard({ onNavigate }: DashboardProps) {
         </div>
       </div>
 
+      <DateFilterBar />
+
       {/* Unified Balance */}
       <div className="card p-5 animate-pulse-glow">
         <div className="flex items-center gap-2 mb-2">
           <Wallet size={16} className="text-[#10b981]" />
-          <span className="label">Saldo Geral Unificado</span>
+          <span className="label">Saldo Atual (em caixa hoje)</span>
         </div>
         <p className="text-3xl font-bold text-white">{fmt(totalBalance)}</p>
+        <p className="text-xs text-[#71717a] mt-1">Dinheiro disponível nas contas bancárias agora</p>
+
+        {/* Projected balance */}
+        <div className="mt-3 p-3 rounded-xl bg-[#0a0a0b] border border-[#27272a]">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <CalendarClock size={14} className="text-[#3b82f6]" />
+              <span className="text-xs text-[#71717a]">Saldo Projetado (com lançamentos futuros)</span>
+            </div>
+            <p className={`text-base font-bold ${projectedBalance >= 0 ? 'text-[#3b82f6]' : 'text-[#ef4444]'}`}>
+              {fmt(projectedBalance)}
+            </p>
+          </div>
+          {upcomingScheduled.length > 0 && (
+            <div className="mt-2 pt-2 border-t border-[#18181b] space-y-1">
+              {upcomingScheduled.map(t => (
+                <div key={t.id} className="flex items-center justify-between text-xs">
+                  <span className="text-[#a1a1aa] truncate flex-1 min-w-0 mr-2">{t.description}</span>
+                  <span className="text-[#71717a] flex-shrink-0">{formatDate(t.date)}</span>
+                  <span className="text-[#ef4444] flex-shrink-0 ml-2">-{formatCurrency(Math.abs(Number(t.amount)))}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="flex items-center gap-4 mt-3 pt-3 border-t border-[#27272a]">
           <div className="flex-1">
             <div className="flex items-center gap-1.5 mb-0.5">
@@ -134,6 +197,7 @@ export function Dashboard({ onNavigate }: DashboardProps) {
 
       {/* Secondary stats */}
       <div className="grid grid-cols-2 gap-3">
+        {!isPJ && (
         <div className="card p-4 card-hover" onClick={() => onNavigate('benefits')}>
           <div className="flex items-center gap-2 mb-1">
             <div className="w-8 h-8 rounded-lg bg-[#f59e0b]/15 flex items-center justify-center">
@@ -143,7 +207,8 @@ export function Dashboard({ onNavigate }: DashboardProps) {
           </div>
           <p className="text-lg font-bold text-white">{fmt(totalBenefits)}</p>
         </div>
-        <div className="card p-4 card-hover" onClick={() => onNavigate('loans')}>
+        )}
+        <div className={`card p-4 card-hover ${isPJ ? 'col-span-2' : ''}`} onClick={() => onNavigate('loans')}>
           <div className="flex items-center gap-2 mb-1">
             <div className="w-8 h-8 rounded-lg bg-[#8b5cf6]/15 flex items-center justify-center">
               <TrendingDown size={14} className="text-[#8b5cf6]" />
@@ -154,57 +219,8 @@ export function Dashboard({ onNavigate }: DashboardProps) {
         </div>
       </div>
 
-      {/* Alerts Center */}
-      <div>
-        <h2 className="text-base font-semibold text-white mb-3 flex items-center gap-2">
-          <Bell size={16} className="text-[#f59e0b]" />
-          Central de Pendências e Alertas
-        </h2>
-        {alerts.length === 0 && openInvoices.length === 0 && upcomingInvoices.length === 0 ? (
-          <div className="card p-4 flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-[#10b981]/10 flex items-center justify-center">
-              <span className="text-[#10b981] text-lg">✓</span>
-            </div>
-            <p className="text-sm text-[#a1a1aa]">Tudo em dia! Nenhuma pendência no momento.</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {openInvoices.map(inv => {
-              const card = cards.find(c => c.id === inv.card_id);
-              const daysLeft = Math.ceil((new Date(inv.due_date).getTime() - Date.now()) / 86400000);
-              return (
-                <div key={inv.id} className="card p-3 flex items-center gap-3 card-hover" onClick={() => onNavigate('cards')}>
-                  <div className="w-10 h-10 rounded-xl bg-[#f59e0b]/15 flex items-center justify-center flex-shrink-0">
-                    <AlertTriangle size={16} className="text-[#f59e0b]" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-white truncate">Fatura {card?.name || 'Cartão'} vence em {daysLeft} dias</p>
-                    <p className="text-xs text-[#71717a]">{fmt(Number(inv.amount))} • Venc: {formatDate(inv.due_date)}</p>
-                  </div>
-                  <span className={`chip ${daysLeft <= 3 ? 'bg-[#ef4444]/15 text-[#ef4444]' : 'bg-[#f59e0b]/15 text-[#f59e0b]'}`}>
-                    {daysLeft <= 0 ? 'Vencida' : `${daysLeft}d`}
-                  </span>
-                </div>
-              );
-            })}
-            {alerts.map(alt => (
-              <div key={alt.id} className="card p-3 flex items-center gap-3">
-                <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${
-                  alt.severity === 'critical' ? 'bg-[#ef4444]/15' : alt.severity === 'warning' ? 'bg-[#f59e0b]/15' : 'bg-[#3b82f6]/15'
-                }`}>
-                  <Bell size={16} className={
-                    alt.severity === 'critical' ? 'text-[#ef4444]' : alt.severity === 'warning' ? 'text-[#f59e0b]' : 'text-[#3b82f6]'
-                  } />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-white truncate">{alt.title}</p>
-                  {alt.message && <p className="text-xs text-[#71717a] truncate">{alt.message}</p>}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      {/* Due Alerts Banner */}
+      <DueAlertsBanner summary={dueAlerts} onNavigate={onNavigate} accounts={accounts} onPaid={loadData} />
 
       {/* Bank Accounts */}
       <div>
@@ -232,7 +248,6 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                 </div>
                 <div className="text-right">
                   <p className="text-base font-bold text-white">{fmt(Number(acc.balance))}</p>
-                  {acc.sync_enabled && <span className="text-xs text-[#10b981]">Sincronizado</span>}
                 </div>
               </div>
             ))}
@@ -321,7 +336,7 @@ export function Dashboard({ onNavigate }: DashboardProps) {
                   </div>
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-white truncate">{t.description}</p>
-                    <p className="text-xs text-[#71717a]">{cat?.name || 'Sem categoria'} • {formatDate(t.date)}</p>
+                    <p className="text-xs text-[#71717a]">{cat?.name || 'Sem categoria'} • {formatDate(t.competencyDate)}</p>
                   </div>
                   <p className={`text-sm font-semibold ${isIncome ? 'text-[#10b981]' : 'text-[#ef4444]'}`}>
                     {isIncome ? '+' : '-'}{fmt(Math.abs(Number(t.amount)))}
@@ -334,6 +349,153 @@ export function Dashboard({ onNavigate }: DashboardProps) {
       </div>
 
       <TransactionForm open={showTransactionForm} onClose={() => setShowTransactionForm(false)} onSaved={loadData} />
+    </div>
+  );
+}
+
+function DueAlertsBanner({ summary, onNavigate, accounts, onPaid }: {
+  summary: DueAlertSummary | null;
+  onNavigate: (page: string) => void;
+  accounts: Account[];
+  onPaid: () => void;
+}) {
+  if (!summary || summary.items.length === 0) {
+    return (
+      <div className="card p-4 flex items-center gap-3">
+        <div className="w-10 h-10 rounded-xl bg-[#10b981]/10 flex items-center justify-center">
+          <span className="text-[#10b981] text-lg">✓</span>
+        </div>
+        <p className="text-sm text-[#a1a1aa]">Tudo em dia! Nenhum vencimento nos próximos dias.</p>
+      </div>
+    );
+  }
+
+  const { overdue, today, soon, totalOverdue, totalDueSoon } = summary;
+  const hasOverdue = overdue.length > 0;
+
+  return (
+    <div className={`rounded-2xl overflow-hidden border ${hasOverdue ? 'border-[#ef4444]/30' : 'border-[#f59e0b]/30'}`}>
+      {/* Banner header */}
+      <div
+        className="p-4 flex items-center gap-3"
+        style={{
+          background: hasOverdue
+            ? 'linear-gradient(135deg, rgba(239,68,68,0.12), transparent)'
+            : 'linear-gradient(135deg, rgba(245,158,11,0.12), transparent)'
+        }}
+      >
+        <div className={`w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 ${hasOverdue ? 'bg-[#ef4444]/20' : 'bg-[#f59e0b]/20'}`}>
+          {hasOverdue ? <AlertTriangle size={20} className="text-[#ef4444]" /> : <Clock size={20} className="text-[#f59e0b]" />}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-bold text-white">
+            {hasOverdue
+              ? `${overdue.length} ${overdue.length === 1 ? 'conta vencida' : 'contas vencidas'}`
+              : today.length > 0
+              ? `${today.length} ${today.length === 1 ? 'vencimento hoje' : 'vencimentos hoje'}`
+              : `${soon.length} ${soon.length === 1 ? 'vencimento próximo' : 'vencimentos próximos'}`}
+          </p>
+          <p className="text-xs text-[#a1a1aa]">
+            {hasOverdue && `Atrasado: ${formatCurrency(totalOverdue)}${totalDueSoon > 0 ? ' • ' : ''}`}
+            {totalDueSoon > 0 && `A vencer: ${formatCurrency(totalDueSoon)}`}
+          </p>
+        </div>
+        {hasOverdue && (
+          <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-[#ef4444]/20 text-[#ef4444] text-xs font-bold animate-pulse">
+            <Zap size={12} /> URGENTE
+          </div>
+        )}
+      </div>
+
+      {/* Items list */}
+      <div className="bg-[#0a0a0b] divide-y divide-[#18181b]">
+        {overdue.map(item => (
+          <DueAlertRow key={item.id} item={item} onNavigate={onNavigate} accounts={accounts} onPaid={onPaid} />
+        ))}
+        {today.map(item => (
+          <DueAlertRow key={item.id} item={item} onNavigate={onNavigate} accounts={accounts} onPaid={onPaid} />
+        ))}
+        {soon.map(item => (
+          <DueAlertRow key={item.id} item={item} onNavigate={onNavigate} accounts={accounts} onPaid={onPaid} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DueAlertRow({ item, onNavigate, accounts, onPaid }: {
+  item: DueAlertItem;
+  onNavigate: (page: string) => void;
+  accounts: Account[];
+  onPaid: () => void;
+}) {
+  const [showPayMenu, setShowPayMenu] = useState(false);
+  const [paying, setPaying] = useState(false);
+  const Icon = item.kind === 'invoice' ? CreditCard : item.kind === 'loan_installment' ? Landmark : Wallet;
+  const color = item.severity === 'overdue' ? '#ef4444' : '#f59e0b';
+  const label =
+    item.severity === 'overdue' ? `${Math.abs(item.daysUntilDue)}d atraso`
+    : item.severity === 'today' ? 'Hoje'
+    : `${item.daysUntilDue}d`;
+
+  async function handlePay(accountId: string) {
+    setPaying(true);
+    await payDueAlertItem(item, accountId);
+    setPaying(false);
+    setShowPayMenu(false);
+    onPaid();
+  }
+
+  return (
+    <div className="p-3 hover:bg-[#18181b] transition-colors">
+      <div className="flex items-center gap-3">
+        <div className="w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0" style={{ background: `${color}15` }}>
+          <Icon size={15} style={{ color }} />
+        </div>
+        <div className="flex-1 min-w-0 cursor-pointer" onClick={() => {
+          if (item.kind === 'invoice') onNavigate('cards');
+          else if (item.kind === 'loan_installment') onNavigate('loans');
+          else onNavigate('transactions');
+        }}>
+          <p className="text-sm font-medium text-white truncate">{item.title}</p>
+          <p className="text-xs text-[#71717a] truncate">{item.subtitle}</p>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <p className="text-sm font-bold text-white">{formatCurrency(item.amount)}</p>
+          <span className="text-[10px] font-bold" style={{ color }}>{label}</span>
+        </div>
+      </div>
+      {/* Pay button */}
+      <div className="mt-2 ml-12">
+        {showPayMenu ? (
+          <div className="flex items-center gap-2">
+            <select
+              className="input flex-1 text-xs py-1.5"
+              defaultValue=""
+              onChange={e => { if (e.target.value) handlePay(e.target.value); }}
+              disabled={paying}
+            >
+              <option value="" disabled>Pagar com conta...</option>
+              {accounts.map(a => (
+                <option key={a.id} value={a.id}>{a.name} — {formatCurrency(Number(a.balance))}</option>
+              ))}
+            </select>
+            <button
+              onClick={() => setShowPayMenu(false)}
+              className="px-2 py-1.5 rounded-lg text-xs text-[#71717a] hover:text-white hover:bg-[#27272a]"
+            >Cancelar</button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setShowPayMenu(true)}
+            disabled={paying}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#10b981]/15 text-[#10b981] text-xs font-medium hover:bg-[#10b981]/25 transition-colors disabled:opacity-50"
+          >
+            <CheckCircle2 size={14} />
+            {paying ? 'Pagando...' : 'Baixar / Pagar'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

@@ -3,6 +3,9 @@ import { supabase, formatCurrency, type Investment } from '@/lib/supabase';
 import { TrendingUp, Plus, Pencil, Trash2, Landmark, Coins, Building2, Bitcoin, PieChart, Layers, List } from 'lucide-react';
 import { Modal } from '@/components/Modal';
 import { ConfirmDialog, EmptyState } from '@/components/Shared';
+import { DateFilterBar } from '@/components/DateFilterBar';
+import { useDateFilter } from '@/lib/dateFilter';
+import { useProfile } from '@/lib/profile';
 
 const invTypeLabels: Record<string, string> = {
   fixed_income: 'Renda Fixa',
@@ -25,6 +28,8 @@ const invIcons: Record<string, typeof Landmark> = {
 type ViewMode = 'unified' | 'detailed';
 
 export function Investments() {
+  const { profile } = useProfile();
+  useDateFilter(); // subscribes to global date filter context
   const [investments, setInvestments] = useState<Investment[]>([]);
   const [loading, setLoading] = useState(true);
   const [viewMode, setViewMode] = useState<ViewMode>('unified');
@@ -38,10 +43,10 @@ export function Investments() {
   });
 
   const loadData = useCallback(async () => {
-    const { data } = await supabase.from('investments').select('*').order('name');
+    const { data } = await supabase.from('investments').select('*').eq('profile', profile).order('name');
     setInvestments(data || []);
     setLoading(false);
-  }, []);
+  }, [profile]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -65,7 +70,7 @@ export function Investments() {
     const data = {
       name: invForm.name, type: invForm.type as Investment['type'], institution: invForm.institution || null,
       quantity: qty, avg_price: avg, current_price: cur,
-      invested_amount: qty * avg, current_value: qty * cur, color: invForm.color,
+      invested_amount: qty * avg, current_value: qty * cur, color: invForm.color, profile,
     };
     if (editing) {
       await supabase.from('investments').update(data).eq('id', editing.id);
@@ -126,6 +131,8 @@ export function Investments() {
           <Plus size={18} /> <span className="hidden sm:inline">Novo</span>
         </button>
       </div>
+
+      <DateFilterBar />
 
       {/* View toggle: Unificada vs Detalhada */}
       <div className="flex gap-2">

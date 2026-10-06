@@ -3,6 +3,9 @@ import { supabase, formatCurrency, formatDate, type Loan, type LoanInstallment }
 import { Landmark, Plus, Pencil, Trash2, TrendingDown, CheckCircle2, Clock, Percent, Calendar, Layers, List } from 'lucide-react';
 import { Modal } from '@/components/Modal';
 import { ConfirmDialog, EmptyState } from '@/components/Shared';
+import { DateFilterBar } from '@/components/DateFilterBar';
+import { useDateFilter } from '@/lib/dateFilter';
+import { useProfile } from '@/lib/profile';
 
 const loanTypeLabels: Record<string, string> = {
   loan: 'Empréstimo Pessoal',
@@ -14,6 +17,8 @@ const loanTypeLabels: Record<string, string> = {
 type ViewMode = 'unified' | 'detailed';
 
 export function Loans() {
+  const { profile } = useProfile();
+  const { startDate, endDate } = useDateFilter();
   const [loans, setLoans] = useState<Loan[]>([]);
   const [installments, setInstallments] = useState<LoanInstallment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -30,13 +35,13 @@ export function Loans() {
 
   const loadData = useCallback(async () => {
     const [lns, insts] = await Promise.all([
-      supabase.from('loans').select('*').order('name'),
-      supabase.from('loan_installments').select('*').order('number'),
+      supabase.from('loans').select('*').eq('profile', profile).order('name'),
+      supabase.from('loan_installments').select('*').eq('profile', profile).gte('due_date', startDate).lte('due_date', endDate).order('number'),
     ]);
     setLoans(lns.data || []);
     setInstallments(insts.data || []);
     setLoading(false);
-  }, []);
+  }, [profile, startDate, endDate]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -65,7 +70,7 @@ export function Loans() {
       due_day: parseInt(loanForm.due_day), start_date: loanForm.start_date,
       remaining_balance: editing ? editing.remaining_balance : total,
       installments_paid: editing ? editing.installments_paid : 0,
-      color: loanForm.color,
+      color: loanForm.color, profile,
     };
     if (editing) {
       await supabase.from('loans').update(data).eq('id', editing.id);
@@ -76,7 +81,7 @@ export function Loans() {
           const dueDate = new Date(loanForm.start_date);
           dueDate.setMonth(dueDate.getMonth() + i);
           dueDate.setDate(parseInt(loanForm.due_day));
-          return { loan_id: created.id, number: i + 1, amount: instAmount, due_date: dueDate.toISOString().slice(0, 10), paid: false };
+          return { loan_id: created.id, number: i + 1, amount: instAmount, due_date: dueDate.toISOString().slice(0, 10), paid: false, profile };
         });
         await supabase.from('loan_installments').insert(insts);
       }
@@ -128,6 +133,8 @@ export function Loans() {
           <Plus size={18} /> <span className="hidden sm:inline">Novo</span>
         </button>
       </div>
+
+      <DateFilterBar />
 
       {/* View toggle: Unificada vs Detalhada */}
       <div className="flex gap-2">

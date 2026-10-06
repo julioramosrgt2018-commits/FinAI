@@ -3,6 +3,10 @@ import { supabase, formatCurrency, formatDate, type Benefit, type BenefitTransac
 import { Wallet, Plus, Pencil, Trash2, ArrowUpRight, ArrowDownRight, UtensilsCrossed, Fuel, Gift, ShoppingBasket } from 'lucide-react';
 import { Modal } from '@/components/Modal';
 import { ConfirmDialog, EmptyState } from '@/components/Shared';
+import { DateFilterBar } from '@/components/DateFilterBar';
+import { useDateFilter } from '@/lib/dateFilter';
+import { useProfile } from '@/lib/profile';
+import { reverseBenefitBalance } from '@/lib/transactionHelpers';
 
 const benefitTypeLabels: Record<string, string> = {
   food: 'Vale Alimentação',
@@ -28,6 +32,8 @@ const tabConfig: { key: BenefitTab; label: string; color: string }[] = [
 ];
 
 export function Benefits() {
+  const { profile } = useProfile();
+  const { startDate, endDate } = useDateFilter();
   const [benefits, setBenefits] = useState<Benefit[]>([]);
   const [transactions, setTransactions] = useState<BenefitTransaction[]>([]);
   const [loading, setLoading] = useState(true);
@@ -36,19 +42,21 @@ export function Benefits() {
   const [showTxnForm, setShowTxnForm] = useState(false);
   const [editing, setEditing] = useState<Benefit | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [editingTxn, setEditingTxn] = useState<BenefitTransaction | null>(null);
+  const [deleteTxnId, setDeleteTxnId] = useState<string | null>(null);
   const [selectedBenefit, setSelectedBenefit] = useState<string | null>(null);
   const [txnForm, setTxnForm] = useState({ description: '', amount: '', type: 'debit' as 'credit' | 'debit', date: new Date().toISOString().slice(0, 10) });
   const [benefitForm, setBenefitForm] = useState({ name: '', provider: 'Manual', type: 'food', balance: '', card_number: '', color: '#f59e0b' });
 
   const loadData = useCallback(async () => {
     const [bens, txns] = await Promise.all([
-      supabase.from('benefits').select('*').order('name'),
-      supabase.from('benefit_transactions').select('*').order('date', { ascending: false }),
+      supabase.from('benefits').select('*').eq('profile', profile).order('name'),
+      supabase.from('benefit_transactions').select('*').eq('profile', profile).gte('date', startDate).lte('date', endDate).order('date', { ascending: false }),
     ]);
     setBenefits(bens.data || []);
     setTransactions(txns.data || []);
     setLoading(false);
-  }, []);
+  }, [profile, startDate, endDate]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -65,7 +73,7 @@ export function Benefits() {
     e.preventDefault();
     const data = {
       name: benefitForm.name, provider: benefitForm.provider, type: benefitForm.type as Benefit['type'],
-      balance: parseFloat(benefitForm.balance) || 0, card_number: benefitForm.card_number || null, color: benefitForm.color,
+      balance: parseFloat(benefitForm.balance) || 0, card_number: benefitForm.card_number || null, color: benefitForm.color, profile,
     };
     if (editing) {
       await supabase.from('benefits').update(data).eq('id', editing.id);
@@ -90,18 +98,54 @@ export function Benefits() {
     if (!selectedBenefit) return;
     const amount = parseFloat(txnForm.amount);
     const signedAmount = txnForm.type === 'debit' ? -Math.abs(amount) : Math.abs(amount);
-    await supabase.from('benefit_transactions').insert({
-      benefit_id: selectedBenefit, description: txnForm.description, amount: signedAmount, type: txnForm.type, date: txnForm.date,
-    });
-    const benefit = benefits.find(b => b.id === selectedBenefit);
-    if (benefit) {
-      const newBalance = Number(benefit.balance) + signedAmount;
-      await supabase.from('benefits').update({ balance: newBalance }).eq('id', selectedBenefit);
+
+    if (editingTxn) {
+      // Reverse old effect
+      await reverseBenefitBalance(editingTxn.benefit_id, Math.abs(Number(editingTxn.amount)), editingTxn.type);
+      // Update transaction
+      await supabase.from('benefit_transactions').update({
+        description: txnForm.description, amount: signedAmount, type: txnForm.type, date: txnForm.date,
+      }).eq('id', editingTxn.id);
+      // Apply new effect
+      const benefit = benefits.find(b => b.id === editingTxn.benefit_id);
+      if (benefit) {
+        const newBalance = Number(benefit.balance) + signedAmount;
+        await supabase.from('benefits').update({ balance: newBalance }).eq('id', editingTxn.benefit_id);
+      }
+      setEditingTxn(null);
+    } else {
+      await supabase.from('benefit_transactions').insert({
+        benefit_id: selectedBenefit, description: txnForm.description, amount: signedAmount, type: txnForm.type, date: txnForm.date, profile,
+      });
+      const benefit = benefits.find(b => b.id === selectedBenefit);
+      if (benefit) {
+        const newBalance = Number(benefit.balance) + signedAmount;
+        await supabase.from('benefits').update({ balance: newBalance }).eq('id', selectedBenefit);
+      }
     }
     setShowTxnForm(false);
     setTxnForm({ description: '', amount: '', type: 'debit', date: new Date().toISOString().slice(0, 10) });
     loadData();
   }
+
+  async function deleteTxn() {
+    if (!deleteTxnId) return;
+    const txn = transactions.find(t => t.id === deleteTxnId);
+    if (txn) {
+      await reverseBenefitBalance(txn.benefit_id, Math.abs(Number(txn.amount)), txn.type);
+      await supabase.from('benefit_transactions').delete().eq('id', deleteTxnId);
+    }
+    setDeleteTxnId(null);
+    loadData();
+  }
+
+  useEffect(() => {
+    if (editingTxn) {
+      setTxnForm({ description: editingTxn.description, amount: String(Math.abs(Number(editingTxn.amount))), type: editingTxn.type, date: editingTxn.date });
+    } else if (showTxnForm) {
+      setTxnForm({ description: '', amount: '', type: 'debit', date: new Date().toISOString().slice(0, 10) });
+    }
+  }, [editingTxn, showTxnForm]);
 
   const colors = ['#f59e0b', '#10b981', '#3b82f6', '#ef4444', '#8b5cf6', '#06b6d4', '#ec4899'];
 
@@ -122,6 +166,8 @@ export function Benefits() {
           <Plus size={18} /> <span className="hidden sm:inline">Novo</span>
         </button>
       </div>
+
+      <DateFilterBar />
 
       {/* Tab selector separating VA, VR, Fuel, Other */}
       <div className="flex gap-2 overflow-x-auto no-scrollbar">
@@ -181,7 +227,8 @@ export function Benefits() {
                     <p className="text-xs text-[#71717a]">{bTxns.length} movimentações</p>
                   </div>
                 </div>
-                <div className="flex gap-1 mt-2">
+                <div className="flex items-center gap-2 mt-2 pt-2 border-t border-[#27272a]">
+                  <div className="flex-1" />
                   <button onClick={(e) => { e.stopPropagation(); setEditing(b); setShowForm(true); }} className="btn-ghost text-xs flex items-center gap-1"><Pencil size={12} /> Editar</button>
                   <button onClick={(e) => { e.stopPropagation(); setDeleteId(b.id); }} className="btn-danger text-xs flex items-center gap-1"><Trash2 size={12} /> Excluir</button>
                 </div>
@@ -193,22 +240,23 @@ export function Benefits() {
         <div className="space-y-4">
           <button onClick={() => setSelectedBenefit(null)} className="text-sm text-[#a1a1aa] hover:text-white">← Voltar</button>
           <div className="card p-5" style={{ background: `linear-gradient(135deg, ${displayBenefit.color}15, transparent)` }}>
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between mb-3">
               <div>
                 <p className="text-lg font-semibold text-white">{displayBenefit.name}</p>
                 <p className="text-xs text-[#71717a]">{benefitTypeLabels[displayBenefit.type]} • {displayBenefit.provider}</p>
               </div>
               <p className="text-2xl font-bold text-white">{formatCurrency(Number(displayBenefit.balance))}</p>
             </div>
+
           </div>
-          <button onClick={() => setShowTxnForm(true)} className="w-full btn-primary flex items-center justify-center gap-2">
+          <button onClick={() => { setEditingTxn(null); setShowTxnForm(true); }} className="w-full btn-primary flex items-center justify-center gap-2">
             <Plus size={18} /> Registrar Movimentação
           </button>
           <div className="card divide-y divide-[#27272a]">
             {displayTxns.length === 0 ? (
               <p className="p-6 text-center text-sm text-[#71717a]">Nenhuma movimentação registrada.</p>
             ) : displayTxns.map(t => (
-              <div key={t.id} className="flex items-center gap-3 p-3">
+              <div key={t.id} className="flex items-center gap-3 p-3 group">
                 <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${t.type === 'credit' ? 'bg-[#10b981]/15' : 'bg-[#ef4444]/15'}`}>
                   {t.type === 'credit' ? <ArrowUpRight size={15} className="text-[#10b981]" /> : <ArrowDownRight size={15} className="text-[#ef4444]" />}
                 </div>
@@ -219,6 +267,14 @@ export function Benefits() {
                 <p className={`text-sm font-semibold ${t.type === 'credit' ? 'text-[#10b981]' : 'text-[#ef4444]'}`}>
                   {t.type === 'credit' ? '+' : '-'}{formatCurrency(Math.abs(Number(t.amount)))}
                 </p>
+                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button onClick={() => { setEditingTxn(t); setShowTxnForm(true); }} className="p-1.5 hover:bg-[#27272a] rounded-lg">
+                    <Pencil size={12} className="text-[#a1a1aa]" />
+                  </button>
+                  <button onClick={() => setDeleteTxnId(t.id)} className="p-1.5 hover:bg-[#ef4444]/10 rounded-lg">
+                    <Trash2 size={12} className="text-[#ef4444]" />
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -279,7 +335,7 @@ export function Benefits() {
       </Modal>
 
       {/* Transaction Form */}
-      <Modal open={showTxnForm} onClose={() => setShowTxnForm(false)} title="Registrar Movimentação" size="sm">
+      <Modal open={showTxnForm} onClose={() => { setShowTxnForm(false); setEditingTxn(null); }} title={editingTxn ? 'Editar Movimentação' : 'Registrar Movimentação'} size="sm">
         <form onSubmit={saveTxn} className="space-y-4">
           <div className="flex gap-2">
             <button type="button" onClick={() => setTxnForm(f => ({ ...f, type: 'debit' }))}
@@ -315,6 +371,14 @@ export function Benefits() {
         message="Todas as movimentações vinculadas serão removidas."
         onConfirm={deleteBenefit}
         onCancel={() => setDeleteId(null)}
+      />
+
+      <ConfirmDialog
+        open={!!deleteTxnId}
+        title="Excluir movimentação?"
+        message="O valor será removido e o saldo do benefício será ajustado."
+        onConfirm={deleteTxn}
+        onCancel={() => setDeleteTxnId(null)}
       />
     </div>
   );

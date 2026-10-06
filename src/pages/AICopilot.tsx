@@ -1,8 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, formatCurrency, type AIConversation, type Transaction, type Account, type CreditCard, type Category, type Loan, type Benefit, type Investment } from '@/lib/supabase';
 import { Sparkles, Send, Bot, User, TrendingUp, TrendingDown, Lightbulb, AlertTriangle } from 'lucide-react';
+import { useProfile } from '@/lib/profile';
 
 export function AICopilot() {
+  const { profile, isPJ } = useProfile();
   const [conversations, setConversations] = useState<AIConversation[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
@@ -20,14 +22,14 @@ export function AICopilot() {
 
   const loadData = useCallback(async () => {
     const [convs, txns, accs, cds, cats, lns, bens, invs] = await Promise.all([
-      supabase.from('ai_conversations').select('*').order('created_at'),
-      supabase.from('transactions').select('*').order('date', { ascending: false }).limit(50),
-      supabase.from('accounts').select('*'),
-      supabase.from('credit_cards').select('*'),
-      supabase.from('categories').select('*'),
-      supabase.from('loans').select('*'),
-      supabase.from('benefits').select('*'),
-      supabase.from('investments').select('*'),
+      supabase.from('ai_conversations').select('*').eq('profile', profile).order('created_at'),
+      supabase.from('transactions').select('*').eq('profile', profile).order('date', { ascending: false }).limit(50),
+      supabase.from('accounts').select('*').eq('profile', profile),
+      supabase.from('credit_cards').select('*').eq('profile', profile),
+      supabase.from('categories').select('*').eq('profile', profile),
+      supabase.from('loans').select('*').eq('profile', profile),
+      supabase.from('benefits').select('*').eq('profile', profile),
+      supabase.from('investments').select('*').eq('profile', profile),
     ]);
     setConversations(convs.data || []);
     setFinancialData({
@@ -40,7 +42,7 @@ export function AICopilot() {
       investments: invs.data || [],
     });
     setLoading(false);
-  }, []);
+  }, [profile]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -67,7 +69,8 @@ export function AICopilot() {
     const totalInvested = investments.reduce((s, i) => s + Number(i.current_value), 0);
 
     if (q.includes('saldo') || q.includes('resumo') || q.includes('visão') || q.includes('visao')) {
-      return `Aqui está seu resumo financeiro atual:\n\n• Saldo Total em Contas: ${formatCurrency(totalBalance)}\n• Receitas deste mês: ${formatCurrency(monthIncome)}\n• Despesas deste mês: ${formatCurrency(monthExpense)}\n• Saldo do mês: ${formatCurrency(monthIncome - monthExpense)}\n• Benefícios (VA/VR): ${formatCurrency(totalBenefits)}\n• Dívidas pendentes: ${formatCurrency(totalDebt)}\n• Patrimônio investido: ${formatCurrency(totalInvested)}\n\n${monthIncome - monthExpense < 0 ? '⚠️ Atenção: suas despesas superaram suas receitas este mês. Considere revisar gastos não essenciais.' : '✓ Você está com saldo positivo este mês. Continue assim!'}`;
+      const benefitsLine = isPJ ? '' : `\n• Benefícios (VA/VR): ${formatCurrency(totalBenefits)}`;
+      return `Aqui está seu resumo financeiro atual:\n\n• Saldo Total em Contas: ${formatCurrency(totalBalance)}\n• Receitas deste mês: ${formatCurrency(monthIncome)}\n• Despesas deste mês: ${formatCurrency(monthExpense)}\n• Saldo do mês: ${formatCurrency(monthIncome - monthExpense)}${benefitsLine}\n• Dívidas pendentes: ${formatCurrency(totalDebt)}\n• Patrimônio investido: ${formatCurrency(totalInvested)}\n\n${monthIncome - monthExpense < 0 ? '⚠️ Atenção: suas despesas superaram suas receitas este mês. Considere revisar gastos não essenciais.' : '✓ Você está com saldo positivo este mês. Continue assim!'}`;
     }
 
     if (q.includes('gasto') || q.includes('despesa') || q.includes('corte') || q.includes('economiz')) {
@@ -135,6 +138,7 @@ export function AICopilot() {
     }
 
     if (q.includes('benef') || q.includes('vale') || q.includes('vr') || q.includes('va')) {
+      if (isPJ) return 'Benefícios (VA/VR) não estão disponíveis no perfil Pessoa Jurídica.';
       if (benefits.length === 0) return 'Você não possui benefícios (VA/VR) cadastrados.';
       let response = `Seus benefícios:\n\n`;
       benefits.forEach(b => { response += `• ${b.name}: ${formatCurrency(Number(b.balance))}\n`; });
@@ -182,11 +186,11 @@ export function AICopilot() {
     setInput('');
     setThinking(true);
 
-    await supabase.from('ai_conversations').insert({ role: 'user', content: userMsg });
+    await supabase.from('ai_conversations').insert({ role: 'user', content: userMsg, profile });
 
     const response = generateAIResponse(userMsg);
     await new Promise(r => setTimeout(r, 800));
-    await supabase.from('ai_conversations').insert({ role: 'assistant', content: response });
+    await supabase.from('ai_conversations').insert({ role: 'assistant', content: response, profile });
 
     setThinking(false);
     loadData();

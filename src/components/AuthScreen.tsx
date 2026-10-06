@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSecurity } from '@/lib/security';
-import { Fingerprint, Delete, Lock, Shield, Eye, EyeOff } from 'lucide-react';
+import { Fingerprint, Delete, Lock, Shield, Eye, EyeOff, ScanFace, AlertCircle, Loader2 } from 'lucide-react';
 
 export function AuthScreen() {
   const { pin, setPin, verifyPin, unlock, biometricAvailable, biometricEnabled, unlockWithBiometric } = useSecurity();
@@ -9,18 +9,24 @@ export function AuthScreen() {
   const [confirmInput, setConfirmInput] = useState('');
   const [error, setError] = useState('');
   const [showPin, setShowPin] = useState(false);
+  const [bioLoading, setBioLoading] = useState(false);
+  const [bioError, setBioError] = useState('');
 
   useEffect(() => {
     setMode(pin ? 'login' : 'setup');
   }, [pin]);
 
+  // Auto-trigger biometric on login screen if enabled
+  useEffect(() => {
+    if (mode === 'login' && biometricAvailable && biometricEnabled && !bioLoading) {
+      handleBiometricUnlock();
+    }
+  }, [mode, biometricAvailable, biometricEnabled]);
+
   function pressDigit(d: string) {
     setError('');
-    if (mode === 'setup') {
-      if (input.length < 6) setInput(input + d);
-    } else {
-      if (input.length < 6) setInput(input + d);
-    }
+    setBioError('');
+    if (input.length < 6) setInput(input + d);
   }
 
   function deleteDigit() {
@@ -61,6 +67,17 @@ export function AuthScreen() {
       return () => clearTimeout(t);
     }
   }, [input]);
+
+  async function handleBiometricUnlock() {
+    if (bioLoading) return;
+    setBioLoading(true);
+    setBioError('');
+    const success = await unlockWithBiometric();
+    setBioLoading(false);
+    if (!success) {
+      setBioError('Biometria não reconhecida. Use o PIN para continuar.');
+    }
+  }
 
   const dots = Array.from({ length: 6 }, (_, i) => i < input.length);
 
@@ -126,17 +143,32 @@ export function AuthScreen() {
         <p className="text-sm text-[#a1a1aa] font-mono mb-2">{input || '—'}</p>
       )}
 
-      {/* Biometric button */}
+      {/* Biometric error message */}
+      {bioError && (
+        <div className="flex items-center gap-1.5 text-xs text-[#f59e0b] bg-[#f59e0b]/10 rounded-lg px-3 py-2 mb-3 max-w-xs text-center animate-fade-in">
+          <AlertCircle size={14} className="flex-shrink-0" />
+          <span>{bioError}</span>
+        </div>
+      )}
+
+      {/* Biometric button - login mode with enrolled credential */}
       {mode === 'login' && biometricAvailable && biometricEnabled && (
         <button
-          onClick={() => {
-            if (unlockWithBiometric()) return;
-            setError('Biometria não reconhecida.');
-          }}
-          className="flex items-center gap-2 text-sm text-[#10b981] bg-[#10b981]/10 rounded-xl px-4 py-2.5 mb-4 hover:bg-[#10b981]/20 transition-colors"
+          onClick={handleBiometricUnlock}
+          disabled={bioLoading}
+          className="flex items-center gap-2 text-sm text-[#10b981] bg-[#10b981]/10 rounded-xl px-4 py-2.5 mb-4 hover:bg-[#10b981]/20 transition-colors disabled:opacity-50"
         >
-          <Fingerprint size={20} />
-          Usar biometria
+          {bioLoading ? (
+            <>
+              <Loader2 size={20} className="animate-spin" />
+              Aguardando biometria...
+            </>
+          ) : (
+            <>
+              <Fingerprint size={20} />
+              Usar biometria
+            </>
+          )}
         </button>
       )}
 
@@ -154,13 +186,11 @@ export function AuthScreen() {
         <div className="flex items-center justify-center">
           {mode === 'login' && biometricAvailable && !biometricEnabled && (
             <button
-              onClick={() => {
-                if (unlockWithBiometric()) return;
-                setError('Biometria não reconhecida.');
-              }}
-              className="w-14 h-14 rounded-2xl bg-[#10b981]/10 flex items-center justify-center hover:bg-[#10b981]/20 transition-colors"
+              onClick={handleBiometricUnlock}
+              disabled={bioLoading}
+              className="w-14 h-14 rounded-2xl bg-[#10b981]/10 flex items-center justify-center hover:bg-[#10b981]/20 transition-colors disabled:opacity-50"
             >
-              <Fingerprint size={24} className="text-[#10b981]" />
+              {bioLoading ? <Loader2 size={24} className="text-[#10b981] animate-spin" /> : <Fingerprint size={24} className="text-[#10b981]" />}
             </button>
           )}
         </div>

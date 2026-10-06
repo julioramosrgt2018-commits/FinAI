@@ -3,10 +3,12 @@ import { supabase, type Category } from '@/lib/supabase';
 import { Plus, Pencil, Trash2, Tag, ArrowDownCircle, ArrowUpCircle } from 'lucide-react';
 import { Modal } from '@/components/Modal';
 import { ConfirmDialog, EmptyState } from '@/components/Shared';
+import { useProfile } from '@/lib/profile';
 
 const iconOptions = ['Tag', 'Home', 'UtensilsCrossed', 'Car', 'HeartPulse', 'GraduationCap', 'Gamepad2', 'ShoppingBag', 'Wallet', 'TrendingUp', 'Briefcase', 'Plane', 'Gift', 'Dumbbell', 'Coffee', 'Smartphone'];
 
 export function Categories() {
+  const { profile } = useProfile();
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -17,10 +19,10 @@ export function Categories() {
   });
 
   const loadData = useCallback(async () => {
-    const { data } = await supabase.from('categories').select('*').order('name');
+    const { data } = await supabase.from('categories').select('*').eq('profile', profile).order('name');
     setCategories(data || []);
     setLoading(false);
-  }, []);
+  }, [profile]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -36,7 +38,7 @@ export function Categories() {
     e.preventDefault();
     const data = {
       name: catForm.name, type: catForm.type, classification: catForm.classification,
-      color: catForm.color, icon: catForm.icon,
+      color: catForm.color, icon: catForm.icon, profile,
     };
     if (editing) {
       await supabase.from('categories').update(data).eq('id', editing.id);

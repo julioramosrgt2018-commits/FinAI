@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
+import { isBiometricSupported, registerBiometric, authenticateBiometric, unregisterBiometric, isBiometricEnrolled } from './webauthn';
 
 const PIN_STORAGE_KEY = 'finai_pin';
 const LOCK_TIMEOUT_KEY = 'finai_lock_timeout';
@@ -16,8 +17,9 @@ type SecurityContextType = {
   lock: () => void;
   biometricAvailable: boolean;
   biometricEnabled: boolean;
-  setBiometricEnabled: (v: boolean) => void;
-  unlockWithBiometric: () => boolean;
+  enrollBiometric: () => Promise<boolean>;
+  disableBiometric: () => void;
+  unlockWithBiometric: () => Promise<boolean>;
   lockTimeout: number;
   setLockTimeout: (v: number) => void;
   maskValues: boolean;
@@ -47,13 +49,10 @@ export function SecurityProvider({ children }: { children: ReactNode }) {
     if (savedMask === 'true') setMaskValuesState(true);
 
     // Check for WebAuthn / biometric support
-    if (typeof window !== 'undefined' && 'credentials' in navigator) {
-      navigator.credentials?.get({ password: false as never }).catch(() => {});
-      // PublicKeyCredential is the standard for platform authenticators
-      if (typeof PublicKeyCredential !== 'undefined') {
-        PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable?.().then(setBiometricAvailable).catch(() => setBiometricAvailable(false));
-      }
-    }
+    isBiometricSupported().then(setBiometricAvailable).catch(() => setBiometricAvailable(false));
+
+    // Check if already enrolled
+    setBiometricEnabledState(isBiometricEnrolled());
   }, []);
 
   // Auto-lock on inactivity
@@ -98,15 +97,28 @@ export function SecurityProvider({ children }: { children: ReactNode }) {
     setIsAuthed(false);
   }, []);
 
-  const setBiometricEnabled = useCallback((v: boolean) => {
-    setBiometricEnabledState(v);
+  const enrollBiometric = useCallback(async () => {
+    const success = await registerBiometric();
+    if (success) {
+      setBiometricEnabledState(true);
+    }
+    return success;
   }, []);
 
-  const unlockWithBiometric = useCallback(() => {
-    if (!biometricAvailable) return false;
-    setIsAuthed(true);
-    setLastActivity(Date.now());
-    return true;
+  const disableBiometric = useCallback(() => {
+    unregisterBiometric();
+    setBiometricEnabledState(false);
+  }, []);
+
+  const unlockWithBiometric = useCallback(async () => {
+    if (!biometricAvailable || !isBiometricEnrolled()) return false;
+    const success = await authenticateBiometric();
+    if (success) {
+      setIsAuthed(true);
+      setLastActivity(Date.now());
+      return true;
+    }
+    return false;
   }, [biometricAvailable]);
 
   const setLockTimeout = useCallback((v: number) => {
@@ -134,7 +146,7 @@ export function SecurityProvider({ children }: { children: ReactNode }) {
   return (
     <SecurityContext.Provider value={{
       isAuthed, pin, setPin, verifyPin, unlock, lock,
-      biometricAvailable, biometricEnabled, setBiometricEnabled, unlockWithBiometric,
+      biometricAvailable, biometricEnabled, enrollBiometric, disableBiometric, unlockWithBiometric,
       lockTimeout, setLockTimeout,
       maskValues, setMaskValues, toggleMask, resetActivity,
     }}>
